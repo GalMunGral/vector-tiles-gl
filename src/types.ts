@@ -8,6 +8,7 @@ export type WorkerMessage =
       tileId: string;
       vertices: Float32Array;
       indices: Uint32Array;
+      lineVertices: Float32Array;
     }
   | {
       type: "abort";

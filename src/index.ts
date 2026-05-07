@@ -4,8 +4,8 @@ import type { DrawableTile, WorkerMessage } from "./types";
 
 const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
 
-const MAX_ZOOM = 18;
-const MIN_ZOOM = 1;
+const MAX_ZOOM = 14;
+const MIN_ZOOM = 0;
 const WIDTH = window.innerWidth;
 const HEIGHT = window.innerHeight;
 
@@ -56,9 +56,9 @@ gl.enableVertexAttribArray(colorLoc);
 
 // map state
 
-let cameraX = 0.57;
-let cameraY = 0.44;
-let zoom = 2.22;
+let cameraX = 0.2565; // Chicago (~87.65°W)
+let cameraY = 0.3720; // Chicago (~41.85°N)
+let zoom = 10;
 
 const N = 10;
 const M = Array(N)
@@ -119,7 +119,7 @@ worker.addEventListener("message", (e: MessageEvent<WorkerMessage>) => {
       break;
     }
     case "done": {
-      const { tileId, vertices, indices } = payload;
+      const { tileId, vertices, indices, lineVertices } = payload;
       requestIdleCallback(() => {
         const vbo = gl.createBuffer()!;
         const ibo = gl.createBuffer()!;
@@ -127,20 +127,34 @@ worker.addEventListener("message", (e: MessageEvent<WorkerMessage>) => {
         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
-        const count = indices.length;
+        const triCount = indices.length;
+
+        const lineVbo = gl.createBuffer()!;
+        gl.bindBuffer(gl.ARRAY_BUFFER, lineVbo);
+        gl.bufferData(gl.ARRAY_BUFFER, lineVertices, gl.STATIC_DRAW);
+        const lineCount = lineVertices.length / VERTEX_SIZE;
+
         tileCache[tileId] = {
           draw(originX: number, originY: number) {
-            gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-            gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, STRIDE, 0);
-            gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, STRIDE, 2 * 4);
-            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
             const m = makeMatrix(cameraX - originX, cameraY - originY, zoom);
             gl.uniformMatrix3fv(matrixLoc, false, [
               m[0], m[1], 0,
               m[2], m[3], 0,
               m[4], m[5], 1,
             ]);
-            gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_INT, 0);
+            if (triCount > 0) {
+              gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+              gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, STRIDE, 0);
+              gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, STRIDE, 2 * 4);
+              gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+              gl.drawElements(gl.TRIANGLES, triCount, gl.UNSIGNED_INT, 0);
+            }
+            if (lineCount > 0) {
+              gl.bindBuffer(gl.ARRAY_BUFFER, lineVbo);
+              gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, STRIDE, 0);
+              gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, STRIDE, 2 * 4);
+              gl.drawArrays(gl.LINES, 0, lineCount);
+            }
           },
         };
       });

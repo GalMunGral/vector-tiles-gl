@@ -12,7 +12,8 @@ type Color = [number, number, number];
 // Compiled from https://tiles.openfreemap.org/styles/liberty at author time.
 // Colors are pre-converted to linear [r,g,b] floats.
 // Zoom-interpolated colors use their zoom-12 value.
-function getColor(layerName: string, props: Record<string, any>): Color {
+
+function getFillColor(layerName: string, props: Record<string, any>): Color | null {
   switch (layerName) {
     case "water":     return [0.620, 0.741, 1.000]; // rgb(158,189,255)
     case "park":      return [0.847, 0.910, 0.784]; // #d8e8c8
@@ -37,7 +38,36 @@ function getColor(layerName: string, props: Record<string, any>): Color {
         default:      return [0.690, 0.835, 0.604];
       }
     default:
-      return [0.820, 0.820, 0.820];
+      return null;
+  }
+}
+
+function getLineColor(layerName: string, props: Record<string, any>): Color | null {
+  switch (layerName) {
+    case "waterway":
+      return [0.627, 0.784, 0.941]; // #a0c8f0
+    case "boundary":
+      return props.admin_level <= 2
+        ? [0.409, 0.409, 0.411] // hsl(248,1%,41%) — country borders
+        : [0.700, 0.700, 0.700]; // hsl(0,0%,70%)   — region borders
+    case "transportation":
+      switch (props.class) {
+        case "motorway":
+        case "motorway_link": return [1.000, 0.800, 0.533]; // #ffcc88
+        case "trunk":
+        case "trunk_link":
+        case "primary":
+        case "secondary":
+        case "tertiary":
+        case "link":          return [1.000, 0.933, 0.667]; // #ffeeaa
+        case "rail":
+        case "transit_rail":  return [0.733, 0.733, 0.733]; // #bbbbbb
+        default:              return [1.000, 1.000, 1.000]; // white
+      }
+    case "park":    return [0.894, 0.945, 0.843]; // rgba(228,241,215)
+    case "aeroway": return [0.941, 0.929, 0.914]; // #f0ede9
+    default:
+      return null;
   }
 }
 
@@ -61,18 +91,23 @@ async function compileTile(x: number, y: number, z: number) {
 
     const vertexData: number[] = [];
     const indexData: number[] = [];
+    const lineData: number[] = [];
 
     const vectorTile = new VectorTile(new Protobuf(data));
     for (const [layerName, layer] of Object.entries(vectorTile.layers)) {
       for (let i = 0; i < layer.length; ++i) {
-        compileFeature(layer.feature(i), layerName, x, y, z, vertexData, indexData);
+        compileFeature(layer.feature(i), layerName, x, y, z, vertexData, indexData, lineData);
       }
     }
 
     const vertices = new Float32Array(vertexData);
     const indices = new Uint32Array(indexData);
+    const lineVertices = new Float32Array(lineData);
     const tileId = `${x}-${y}-${z}`;
-    self.postMessage({ type: "done", tileId, vertices, indices }, [vertices.buffer, indices.buffer]);
+    self.postMessage(
+      { type: "done", tileId, vertices, indices, lineVertices },
+      [vertices.buffer, indices.buffer, lineVertices.buffer]
+    );
   } catch (e) {
     console.warn(e);
   }
@@ -85,21 +120,41 @@ function compileFeature(
   y: number,
   z: number,
   vertexData: number[],
-  indexData: number[]
+  indexData: number[],
+  lineData: number[]
 ) {
   const geojson = feature.toGeoJSON(x, y, z);
   const props = feature.properties ?? {};
-  const color = getColor(layerName, props);
 
   switch (geojson.geometry.type) {
-    case "Polygon":
-      compileRings(geojson.geometry.coordinates, color, vertexData, indexData);
+    case "Polygon": {
+      const color = getFillColor(layerName, props);
+      if (color) compileRings(geojson.geometry.coordinates, color, vertexData, indexData);
       break;
-    case "MultiPolygon":
-      for (const rings of geojson.geometry.coordinates) {
-        compileRings(rings, color, vertexData, indexData);
+    }
+    case "MultiPolygon": {
+      const color = getFillColor(layerName, props);
+      if (color) {
+        for (const rings of geojson.geometry.coordinates) {
+          compileRings(rings, color, vertexData, indexData);
+        }
       }
       break;
+    }
+    case "LineString": {
+      const color = getLineColor(layerName, props);
+      if (color) compileLineString(geojson.geometry.coordinates, color, lineData);
+      break;
+    }
+    case "MultiLineString": {
+      const color = getLineColor(layerName, props);
+      if (color) {
+        for (const line of geojson.geometry.coordinates) {
+          compileLineString(line, color, lineData);
+        }
+      }
+      break;
+    }
   }
 }
 
@@ -120,5 +175,14 @@ function compileRings(
   }
   for (const i of earcut(data.vertices, data.holes, data.dimensions)) {
     indexData.push(i + base);
+  }
+}
+
+function compileLineString(coords: number[][], color: Color, lineData: number[]) {
+  for (let i = 0; i < coords.length - 1; i++) {
+    const x0 = mercatorXfromLng(coords[i][0]),     y0 = mercatorYfromLat(coords[i][1]);
+    const x1 = mercatorXfromLng(coords[i + 1][0]), y1 = mercatorYfromLat(coords[i + 1][1]);
+    lineData.push(x0, y0, color[0], color[1], color[2]);
+    lineData.push(x1, y1, color[0], color[1], color[2]);
   }
 }
