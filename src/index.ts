@@ -41,7 +41,7 @@ const program = createWebGLProgram(
   }
   `
 );
-gl.clearColor(0, 0.2, 0.25, 1);
+gl.clearColor(0.973, 0.957, 0.941, 1); // #f8f4f0 liberty background
 gl.viewport(0, 0, WIDTH, HEIGHT);
 gl.useProgram(program);
 
