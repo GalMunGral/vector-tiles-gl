@@ -2,7 +2,7 @@ import { mat2d, vec2 } from "gl-matrix";
 import { createWebGLProgram, dist, mod } from "./utils";
 import type { CompiledTileFeature, Feature, WorkerMessage } from "./types";
 
-const worker = new Worker("worker.js");
+const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
 
 const MAX_ZOOM = 18;
 const MIN_ZOOM = 1;

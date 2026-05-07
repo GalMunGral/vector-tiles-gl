@@ -3,8 +3,7 @@ import earcut from "earcut";
 import { VectorTile, VectorTileFeature } from "@mapbox/vector-tile";
 import { mercatorXfromLng, mercatorYfromLat } from "./mercator";
 import type { CompiledTileFeature } from "./types";
-// @ts-ignore
-import { TOKEN } from "env";
+const TOKEN = import.meta.env.TOKEN;
 
 const sourceId = "mapbox.country-boundaries-v1";
 
