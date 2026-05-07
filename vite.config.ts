@@ -1,9 +1,7 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  define: {
-    "import.meta.env.TOKEN": JSON.stringify(process.env.TOKEN),
-  },
+  base: "/vector-tiles-gl/",
   build: {
     outDir: "dist",
   },

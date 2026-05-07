@@ -1,6 +1,6 @@
 import { mat2d, vec2 } from "gl-matrix";
 import { createWebGLProgram, dist, mod } from "./utils";
-import type { CompiledTileFeature, Feature, WorkerMessage } from "./types";
+import type { DrawableTile, WorkerMessage } from "./types";
 
 const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
 
@@ -21,30 +21,38 @@ const program = createWebGLProgram(
   gl,
   `#version 300 es
   in vec2 position;
+  in vec3 color;
+  out vec3 vColor;
   uniform mat3 M;
 
   void main() {
+    vColor = color;
     vec3 pos = M * vec3(position.xy, 1.0);
     gl_Position = vec4(pos.xy, 0.0, 1.0);
   }
-    `,
+  `,
   `#version 300 es
   precision mediump float;
-  uniform vec3 color;
+  in vec3 vColor;
   out vec4 fragColor;
 
   void main() {
-    fragColor = vec4(color, 1);
+    fragColor = vec4(vColor, 1);
   }
-    `
+  `
 );
 gl.clearColor(0, 0.2, 0.25, 1);
 gl.viewport(0, 0, WIDTH, HEIGHT);
 gl.useProgram(program);
 
+const VERTEX_SIZE = 5; // x, y, r, g, b
+const STRIDE = VERTEX_SIZE * 4; // bytes
+
 const positionLoc = gl.getAttribLocation(program, "position");
-const colorLoc = gl.getUniformLocation(program, "color");
+const colorLoc = gl.getAttribLocation(program, "color");
+const matrixLoc = gl.getUniformLocation(program, "M");
 gl.enableVertexAttribArray(positionLoc);
+gl.enableVertexAttribArray(colorLoc);
 
 // map state
 
@@ -72,32 +80,34 @@ function makeMatrix(cameraX: number, cameraY: number, zoom: number): mat2d {
   return mat2d.mul(M[2], m2, m1);
 }
 
-const tileCache: Record<string, Array<Feature>> = {};
+const tileCache: Record<string, DrawableTile | null> = {};
 
 function loadTile(
   x: number,
   y: number,
   z: number,
   waitUntil: Promise<void>
-): Array<Feature> {
+): DrawableTile | null {
   const key = `${x}-${y}-${z}`;
   waitUntil.then(() => {
-    if (!tileCache[key]) {
-      tileCache[key] = [];
+    if (!(key in tileCache)) {
+      tileCache[key] = null;
       worker.postMessage({ x, y, z });
     }
   });
   return loadTileFallback(x, y, z);
 }
 
-function loadTileFallback(x: number, y: number, z: number): Array<Feature> {
+function loadTileFallback(x: number, y: number, z: number): DrawableTile | null {
   let key = "";
-  while (z > 0 && !tileCache[(key = `${x}-${y}-${z}`)]?.length) {
+  while (z > 0) {
+    key = `${x}-${y}-${z}`;
+    if (tileCache[key]) return tileCache[key];
     x >>= 1;
     y >>= 1;
     --z;
   }
-  return tileCache[key] ?? [];
+  return tileCache[`${x}-${y}-${z}`] ?? null;
 }
 
 worker.addEventListener("message", (e: MessageEvent<WorkerMessage>) => {
@@ -105,54 +115,39 @@ worker.addEventListener("message", (e: MessageEvent<WorkerMessage>) => {
   switch (payload.type) {
     case "abort": {
       const { x, y, z } = payload;
-      const key = `${x}-${y}-${z}`;
-      delete tileCache[key];
+      delete tileCache[`${x}-${y}-${z}`];
       break;
     }
     case "done": {
+      const { tileId, vertices, indices } = payload;
       requestIdleCallback(() => {
-        for (const feature of payload.data) {
-          compileDrawCall(feature);
-        }
-        const tileId = payload.data[0].tileId;
-        tileCache[tileId].sort((a, b) => (a.featureId < b.featureId ? -1 : 1));
+        const vbo = gl.createBuffer()!;
+        const ibo = gl.createBuffer()!;
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+        const count = indices.length;
+        tileCache[tileId] = {
+          draw(originX: number, originY: number) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+            gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, STRIDE, 0);
+            gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, STRIDE, 2 * 4);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+            const m = makeMatrix(cameraX - originX, cameraY - originY, zoom);
+            gl.uniformMatrix3fv(matrixLoc, false, [
+              m[0], m[1], 0,
+              m[2], m[3], 0,
+              m[4], m[5], 1,
+            ]);
+            gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_INT, 0);
+          },
+        };
       });
       break;
     }
   }
 });
-
-function compileDrawCall(feature: CompiledTileFeature) {
-  const { tileId, featureId, vertices, triangles, color } = feature;
-  const verticesBuf = gl.createBuffer();
-  const trianglesBuf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, verticesBuf);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, trianglesBuf);
-  gl.bufferData(
-    gl.ELEMENT_ARRAY_BUFFER,
-    new Uint32Array(triangles),
-    gl.STATIC_DRAW
-  );
-
-  tileCache[tileId].push({
-    featureId,
-    drawCall(originX: number, originY: number) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, verticesBuf);
-      gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, trianglesBuf);
-      const m = makeMatrix(cameraX - originX, cameraY - originY, zoom);
-      // prettier-ignore
-      gl.uniformMatrix3fv(gl.getUniformLocation(program, "M"), false, [
-        m[0], m[1], 0,
-        m[2], m[3], 0,
-        m[4], m[5], 1,
-      ]);
-      gl.uniform3fv(colorLoc, color);
-      gl.drawElements(gl.TRIANGLES, triangles.length, gl.UNSIGNED_INT, 0);
-    },
-  });
-}
 
 let isMoving = false;
 let prevX = -1;
@@ -258,7 +253,6 @@ requestAnimationFrame(function render() {
   const minTileY = Math.floor(minY * 2 ** Z);
   const maxTileY = Math.floor(maxY * 2 ** Z);
 
-  // optimization: abort tile loading
   if (zoom !== prevZoom || cameraX !== prevCameraX || cameraY !== prevCameraY) {
     prevZoom = zoom;
     prevCameraX = cameraX;
@@ -277,7 +271,7 @@ requestAnimationFrame(function render() {
       const tile = loadTile(X, Y, Z, waitUtil);
       const originX = Math.floor(x / 2 ** Z);
       const originY = Math.floor(y / 2 ** Z);
-      tile.forEach((f) => f.drawCall(originX, originY));
+      tile?.draw(originX, originY);
     }
   }
 

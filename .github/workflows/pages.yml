@@ -24,9 +24,7 @@ jobs:
           node-version: latest
 
       - run: npm ci
-      - env:
-          TOKEN: ${{ secrets.TOKEN }}
-        run: npm run build
+      - run: npm run build
 
       - name: Upload Artifact
         uses: actions/upload-pages-artifact@v3

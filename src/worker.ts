@@ -2,10 +2,8 @@ import Protobuf from "pbf";
 import earcut from "earcut";
 import { VectorTile, VectorTileFeature } from "@mapbox/vector-tile";
 import { mercatorXfromLng, mercatorYfromLat } from "./mercator";
-import type { CompiledTileFeature } from "./types";
-const TOKEN = import.meta.env.TOKEN;
 
-const sourceId = "mapbox.country-boundaries-v1";
+const VERTEX_SIZE = 5; // x, y, r, g, b
 
 let lastRequestedZ = -1;
 
@@ -19,69 +17,73 @@ async function compileTile(x: number, y: number, z: number) {
 
   try {
     const data = await (
-      await fetch(
-        `https://api.mapbox.com/v4/${sourceId}/${z}/${x}/${y}.vector.pbf?access_token=${TOKEN}`
-      )
+      await fetch(`https://tiles.openfreemap.org/planet/latest/${z}/${x}/${y}.pbf`)
     ).arrayBuffer();
 
-    // bail out if the zoom level changed after the tile was requested
     if (z != lastRequestedZ || !data) {
       self.postMessage({ type: "abort", x, y, z });
-      // console.debug("abort", x, y, z);
       return;
     }
 
-    const compiled: Array<CompiledTileFeature> = [];
+    const vertexData: number[] = []; // x, y, r, g, b per vertex
+    const indexData: number[] = [];
+
     const vectorTile = new VectorTile(new Protobuf(data));
-    for (const [key, layer] of Object.entries(vectorTile.layers)) {
+    for (const layer of Object.values(vectorTile.layers)) {
       for (let i = 0; i < layer.length; ++i) {
-        compiled.push(compileFeature(layer.feature(i), x, y, z));
+        compileFeature(layer.feature(i), x, y, z, vertexData, indexData);
       }
     }
-    self.postMessage({ type: "done", data: compiled });
+
+    const vertices = new Float32Array(vertexData);
+    const indices = new Uint32Array(indexData);
+    const tileId = `${x}-${y}-${z}`;
+    self.postMessage({ type: "done", tileId, vertices, indices }, [vertices.buffer, indices.buffer]);
   } catch (e) {
     console.warn(e);
   }
+}
 
-  function compileFeature(
-    feature: VectorTileFeature,
-    x: number,
-    y: number,
-    z: number
-  ) {
-    const tileId = `${x}-${y}-${z}`;
-    const featureId = feature.id;
-    const geojson = feature.toGeoJSON(x, y, z);
+function compileFeature(
+  feature: VectorTileFeature,
+  x: number,
+  y: number,
+  z: number,
+  vertexData: number[],
+  indexData: number[]
+) {
+  const geojson = feature.toGeoJSON(x, y, z);
+  const color = [50, 100, 100].map((m) => 0.2 + (0.8 * (feature.id % m)) / m);
 
-    const color = [50, 100, 100].map((m) => 0.2 + (0.8 * (feature.id % m)) / m);
-    const triangles: Array<number> = [];
-    const vertices: Array<number> = [];
+  switch (geojson.geometry.type) {
+    case "Polygon":
+      compileRings(geojson.geometry.coordinates, color, vertexData, indexData);
+      break;
+    case "MultiPolygon":
+      for (const rings of geojson.geometry.coordinates) {
+        compileRings(rings, color, vertexData, indexData);
+      }
+      break;
+  }
+}
 
-    switch (geojson.geometry.type) {
-      case "Polygon":
-        compile(geojson.geometry.coordinates);
-        break;
-      case "MultiPolygon":
-        geojson.geometry.coordinates.forEach((c) => compile(c));
-        break;
-      case "LineString":
-      case "MultiLineString":
-      default:
-        console.info("not implemented");
-    }
+function compileRings(
+  rings: number[][][],
+  color: number[],
+  vertexData: number[],
+  indexData: number[]
+) {
+  const data = earcut.flatten(
+    rings.map((ring) =>
+      ring.map((v) => [mercatorXfromLng(v[0]), mercatorYfromLat(v[1])])
+    )
+  );
 
-    return { tileId, featureId, color, vertices, triangles };
-
-    function compile(rings: Array<Array<Array<number>>>) {
-      const data = earcut.flatten(
-        rings.map((ring) =>
-          ring.map((v) => [mercatorXfromLng(v[0]), mercatorYfromLat(v[1])])
-        )
-      );
-      const base = vertices.length / 2;
-      vertices.push(...data.vertices);
-      const tri = earcut(data.vertices, data.holes, data.dimensions);
-      triangles.push(...tri.map((i) => i + base));
-    }
+  const base = vertexData.length / VERTEX_SIZE;
+  for (let i = 0; i < data.vertices.length; i += 2) {
+    vertexData.push(data.vertices[i], data.vertices[i + 1], color[0], color[1], color[2]);
+  }
+  for (const i of earcut(data.vertices, data.holes, data.dimensions)) {
+    indexData.push(i + base);
   }
 }
