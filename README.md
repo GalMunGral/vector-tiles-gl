@@ -1,6 +1,6 @@
 # WebGL Vector Tile Renderer
 
-**Live demo:** https://galmungral.github.io/vector-tiles-gl/
+**Live demo:** https://hwenchi.github.io/vector-tiles-gl/
 
 ## Rhetorical Design
 
